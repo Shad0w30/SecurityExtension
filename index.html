@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Actions Shell Injection Detector</title>
+    <style>
+        :root {
+            --primary: #0366d6;
+            --danger: #d73a49;
+            --warning: #f66a0a;
+            --success: #28a745;
+            --light: #f6f8fa;
+            --dark: #24292e;
+            --border: #e1e4e8;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: var(--dark);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #fafbfc;
+        }
+        
+        h1 {
+            color: var(--primary);
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .card {
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 300px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            resize: vertical;
+        }
+        
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .btn:hover {
+            background-color: #0356b6;
+        }
+        
+        .btn-danger {
+            background-color: var(--danger);
+        }
+        
+        .btn-danger:hover {
+            background-color: #c62c3b;
+        }
+        
+        .result-section {
+            margin-top: 20px;
+        }
+        
+        .issue {
+            background-color: #ffebe9;
+            border: 1px solid #f5c6c3;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        
+        .issue h4 {
+            margin: 0 0 8px 0;
+            color: var(--danger);
+        }
+        
+        .fixed-code {
+            background-color: #f1f8ff;
+            border-left: 4px solid var(--primary);
+            padding: 12px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 10px;
+        }
+        
+        .highlight {
+            background-color: #fff8c5;
+            padding: 2px;
+            border-radius: 2px;
+        }
+        
+        .summary {
+            background-color: var(--light);
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        
+        .safe {
+            color: var(--success);
+            font-weight: bold;
+        }
+        
+        .danger {
+            color: var(--danger);
+            font-weight: bold;
+        }
+        
+        .file-input {
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>GitHub Actions Shell Injection Detector</h1>
+    
+    <div class="summary">
+        <p>This tool analyzes your GitHub Actions workflow files for potential shell injection vulnerabilities.</p>
+        <p>It checks for dangerous patterns like direct usage of <code>${{ github.event.* }}</code> context data in <code>run:</code> steps.</p>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Input YAML</h2>
+            <div class="file-input">
+                <input type="file" id="fileUpload" accept=".yml,.yaml">
+                <button class="btn" onclick="document.getElementById('fileUpload').click()">Upload YAML File</button>
+                <button class="btn btn-danger" onclick="clearInput()">Clear</button>
+            </div>
+            <textarea id="yamlInput" placeholder="Paste your GitHub Actions YAML here..."></textarea>
+            <button class="btn" onclick="analyzeYAML()">Analyze for Injection Risks</button>
+        </div>
+        
+        <div class="card">
+            <h2>Analysis Results</h2>
+            <div id="results"></div>
+        </div>
+    </div>
+
+    <script>
+        // Handle file upload
+        document.getElementById('fileUpload').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('yamlInput').value = e.target.result;
+            };
+            reader.readAsText(file);
+        });
+        
+        // Clear input
+        function clearInput() {
+            document.getElementById('yamlInput').value = '';
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('fileUpload').value = '';
+        }
+        
+        // Analyze the YAML for injection risks
+        function analyzeYAML() {
+            const yamlText = document.getElementById('yamlInput').value;
+            if (!yamlText.trim()) {
+                alert('Please enter some YAML code to analyze');
+                return;
+            }
+            
+            try {
+                const issues = findInjectionRisks(yamlText);
+                displayResults(issues, yamlText);
+            } catch (error) {
+                document.getElementById('results').innerHTML = `
+                    <div class="issue">
+                        <h4>Error</h4>
+                        <p>Failed to parse YAML: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        // Find injection risks in YAML
+        function findInjectionRisks(yamlText) {
+            const issues = [];
+            const lines = yamlText.split('\n');
+            
+            // Patterns to detect
+            const dangerousPatterns = [
+                /\${{.*github\.event\./,
+                /\${{.*github\.head_ref/,
+                /\${{.*github\.ref/,
+                /\${{.*github\.base_ref/,
+                /\${{.*inputs\./,
+                /\${{.*vars\./,
+            ];
+            
+            let inRunSection = false;
+            let runSectionIndent = 0;
+            let currentJob = '';
+            let currentStep = '';
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmedLine = line.trim();
+                
+                // Detect job names
+                if (trimmedLine.endsWith(':')) {
+                    const jobMatch = line.match(/^(\s*)(\w+):\s*$/);
+                    if (jobMatch && !line.includes('name:') && !line.startsWith(' ') && !line.startsWith('-')) {
+                        currentJob = jobMatch[2];
+                    }
+                }
+                
+                // Detect step names
+                if (trimmedLine.startsWith('- name:')) {
+                    currentStep = trimmedLine.substring(7).trim();
+                }
+                
+                // Detect run sections
+                if (trimmedLine.startsWith('run:') && !trimmedLine.includes('uses:')) {
+                    inRunSection = true;
+                    runSectionIndent = line.indexOf('run:');
+                    
+                    // Check for inline run commands
+                    const runCommand = trimmedLine.substring(4).trim();
+                    if (runCommand) {
+                        checkLineForDangerousPatterns(runCommand, i, line, issues, currentJob, currentStep);
+                    }
+                } 
+                // Check if we're inside a run section
+                else if (inRunSection) {
+                    const currentIndent = line.search(/\S|$/);
+                    
+                    // If the current line has less indent than the run section, we've exited
+                    if (currentIndent <= runSectionIndent && trimmedLine !== '') {
+                        inRunSection = false;
+                    } else {
+                        // Check this line for dangerous patterns
+                        checkLineForDangerousPatterns(line, i, line, issues, currentJob, currentStep);
+                    }
+                }
+                
+                // Check for direct usage in other places too
+                if (!inRunSection) {
+                    checkLineForDangerousPatterns(line, i, line, issues, currentJob, currentStep);
+                }
+            }
+            
+            return issues;
+        }
+        
+        // Check a line for dangerous patterns
+        function checkLineForDangerousPatterns(text, lineNum, originalLine, issues, currentJob, currentStep) {
+            const dangerousPatterns = [
+                { 
+                    pattern: /\${{.*github\.event\.(.*?)}}/,
+                    description: "Using github.event data directly in run commands can allow command injection"
+                },
+                { 
+                    pattern: /\${{.*github\.head_ref/,
+                    description: "Using github.head_ref directly in run commands can allow command injection"
+                },
+                { 
+                    pattern: /\${{.*github\.ref/,
+                    description: "Using github.ref directly in run commands can allow command injection"
+                },
+                { 
+                    pattern: /\${{.*github\.base_ref/,
+                    description: "Using github.base_ref directly in run commands can allow command injection"
+                },
+                { 
+                    pattern: /\${{.*inputs\.(.*?)}}/,
+                    description: "Using inputs directly in run commands can allow command injection"
+                },
+                { 
+                    pattern: /\${{.*vars\.(.*?)}}/,
+                    description: "Using variables directly in run commands can allow command injection"
+                }
+            ];
+            
+            dangerousPatterns.forEach(patternInfo => {
+                const match = text.match(patternInfo.pattern);
+                if (match) {
+                    issues.push({
+                        line: lineNum + 1,
+                        code: originalLine,
+                        description: patternInfo.description,
+                        context: match[0],
+                        job: currentJob,
+                        step: currentStep
+                    });
+                }
+            });
+        }
+        
+        // Display results
+        function displayResults(issues, originalYaml) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (issues.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="safe">
+                        <p>No shell injection vulnerabilities found! Your GitHub Actions workflow looks secure.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let resultsHTML = `
+                <div class="danger">
+                    <p>Found ${issues.length} potential shell injection vulnerability(ies)</p>
+                </div>
+            `;
+            
+            issues.forEach(issue => {
+                // Generate a fixed version
+                const fixedCode = generateFix(issue.code, issue.context);
+                
+                resultsHTML += `
+                    <div class="issue">
+                        <h4>Vulnerability in ${issue.job || 'unknown job'}${issue.step ? ` / ${issue.step}` : ''} (Line ${issue.line})</h4>
+                        <p>${issue.description}</p>
+                        <p><strong>Problematic code:</strong></p>
+                        <div class="fixed-code">${highlightProblem(issue.code, issue.context)}</div>
+                        <p><strong>Recommended fix:</strong></p>
+                        <div class="fixed-code">${fixedCode}</div>
+                    </div>
+                `;
+            });
+            
+            resultsDiv.innerHTML = resultsHTML;
+        }
+        
+        // Highlight the problematic part of the code
+        function highlightProblem(code, context) {
+            return code.replace(context, `<span class="highlight">${context}</span>`);
+        }
+        
+        // Generate a fix for the vulnerable code
+        function generateFix(code, context) {
+            // Extract the expression from the context
+            const exprMatch = context.match(/\${{(.*?)}}/);
+            if (!exprMatch) return code;
+            
+            const expression = exprMatch[1].trim();
+            
+            // Generate a safe environment variable name
+            const envVarName = generateEnvVarName(expression);
+            
+            // Check if this is a run step
+            if (code.trim().startsWith('run:')) {
+                // Check if it's a single-line or multi-line run command
+                if (code.includes('|')) {
+                    // Multi-line run command - we need to add env section above
+                    return code.replace(/run:\s*\|/, `env:\n  ${envVarName}: \${{ ${expression} }}\nrun: |`).replace(
+                        context, 
+                        `"$$${envVarName}"`
+                    );
+                } else {
+                    // Single-line run command
+                    const runCommand = code.substring(code.indexOf('run:') + 4).trim();
+                    const safeCommand = runCommand.replace(context, `"$$${envVarName}"`);
+                    
+                    return `env:\n  ${envVarName}: \${{ ${expression} }}\nrun: ${safeCommand}`;
+                }
+            } else {
+                // Not a run step - just replace with env var usage
+                return code.replace(context, `\${{ env.${envVarName} }}`);
+            }
+        }
+        
+        // Generate a safe environment variable name from an expression
+        function generateEnvVarName(expression) {
+            return expression
+                .replace(/\./g, '_')
+                .replace(/\s+/g, '_')
+                .replace(/[^a-zA-Z0-9_]/g, '')
+                .toUpperCase();
+        }
+    </script>
+</body>
+</html>
